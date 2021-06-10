@@ -1,0 +1,135 @@
+# setting hosts
+- hosts: localhost
+  gather_facts: false
+
+#Variables
+  vars:
+    ansible_python_interpreter: '{{ ansible_playbook_python }}'
+    image_name: python-v1
+    image_tag: latest
+    replicas: 1
+# Pre-Tasks to Install Prerequisites
+  pre_tasks:
+    - name: Install Docker.
+      apt:
+        name: docker
+        state: latest
+
+    - name: Start Docker
+      service:
+        name: docker
+        state: started
+
+    - name: Add an apt signing key for Kubernetes
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: Adding apt repository for Kubernetes
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: kubernetes.list
+
+    - name: Install Kubernetes binaries
+      apt:
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - kubelet
+          - kubeadm
+          - kubectl
+
+#    - name: Configure node ip
+#      lineinfile:
+#        path: /etc/default/kubelet
+#        line: KUBELET_EXTRA_ARGS=--node-ip={{ node_ip }}
+
+    - name: Restart kubelet
+      service:
+        name: kubelet
+        daemon_reload: yes
+        state: restarted
+
+    - name: Add an apt repository for Minikube
+      shell: curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube_latest_amd64.deb
+
+    - name: Install Minikube
+      shell: sudo dpkg -i minikube_latest_amd64.deb
+
+    - name: add user
+      shell: sudo usermod -aG docker $USER
+
+    # Check if Minikube is Running or not
+    - name: Check Minikube's status.
+      command: minikube status
+      register: minikube_status
+      changed_when: false
+      ignore_errors: true
+
+    # Otherwise will start minikube
+    - name: Start Minikube if it's not running
+      command: minikube start
+      when: "not minikube_status.stdout or 'Running' not in minikube_status.stdout"
+
+  # Check existing images
+  tasks:
+    - name: Get existing image hash.
+      shell: |
+        eval $(minikube docker-env)
+        docker images -q {{ image_name }}
+      register: image_hash
+      changed_when: false
+
+    # Otherwise will create an image from Dockerfile location
+    - name: Build image if it's not already built.
+      shell: |
+        eval $(minikube docker-env)
+        docker build -t {{ image_name }} ./pythonapp
+      when: not image_hash.stdout
+
+    # Create Kubernetes resources to run Hello Go.
+    - name: Create a Deployment for Python.
+      k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: python
+            namespace: default
+          spec:
+            replicas: "{{ replicas }}"
+            selector:
+              matchLabels:
+                app: python
+            template:
+              metadata:
+                labels:
+                  app: python
+              spec:
+                containers:
+                  - name: python
+                    image: "{{ image_name }}:{{ image_tag }}"
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 80
+    # Create Kubernetes Service (DNS required)
+    - name: Create a Service for Python
+      k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: python
+            namespace: default
+          spec:
+            type: LoadBalancer
+            ports:
+              - port: 80
+                targetPort: 8900
+            selector:
+              app: python
