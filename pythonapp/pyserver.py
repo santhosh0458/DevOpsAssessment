@@ -1,6 +1,5 @@
 import socket
 import datetime
-import os
 
 # Define socket host and port
 HOSTNAME = socket. gethostname()
